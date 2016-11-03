@@ -44,6 +44,63 @@ PubSubClient mqtt(mqttServer, mqttPort, client);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
+
+unsigned long startConv;
+unsigned long delayconv;
+void startConversion() {
+  DEBUG_MSG("Request temp\n");
+  sensors.begin();
+  sensors.setWaitForConversion(false);
+  sensors.requestTemperatures();
+
+  startConv = millis();
+  int resolution = 12;
+  delayconv = 750 / (1 << (12 - resolution));
+}
+
+void waitEndOfConversion() {
+  // wait if sensor have not finish
+  unsigned long now = millis();
+  if (now - startConv < delayconv) {
+    DEBUG_MSG("Wait convert\n");
+    delay(delayconv - (now - startConv));
+  }
+
+}
+
+void waitWifi() {
+    // wait wifi
+  DEBUG_MSG("Connecting to %s\n", ssidName);
+  uint8_t i = 0;
+  while (WiFi.status() != WL_CONNECTED && i++ < 200) {
+    // DEBUG_MSG("Wait for %s\n",ssidName);
+    delay(100);
+  }
+  if (i >= 200) {
+    DEBUG_MSG("Could not connect to %s\n", ssidName);
+    // GO to deep sleep before retry
+    ESP.deepSleep(DEEPSLEEP * 1000000);
+  }
+
+}
+
+void connectMqtt() {
+  // connect MQTT
+  boolean isConnected = false;
+  int i = 0;
+  do {
+    isConnected = mqtt.connect(mqttClientId, mqttUser, mqttPassword, "test/lostcom", 0, false, "yep");
+    i++;
+  } while (!isConnected && i < 5);
+
+  if (!isConnected) {
+    DEBUG_MSG("Could not connect to MQTT server\n");
+    // GO to deep sleep before retry
+    ESP.deepSleep(DEEPSLEEP * 1000000);
+  }
+  DEBUG_MSG("Connected to MQTT server\n");
+}
+
 void setup() {
 
 #ifdef DEBUG_ESP_PORT
@@ -55,50 +112,14 @@ void setup() {
   // WiFi.begin(ssidName, ssidPassword, 11);
 
   DEBUG_MSG("\n");
-  DEBUG_MSG("Request temp\n");
-  sensors.begin();
-  sensors.setWaitForConversion(false);
-  sensors.requestTemperatures();
+  startConversion();
 
-  unsigned long startConv = millis();
-  int resolution = 12;
-  unsigned long delayconv = 750 / (1 << (12 - resolution));
-
-  // wait wifi
-  DEBUG_MSG("Connecting to %s\n", ssidName);
-  uint8_t i = 0;
-  while (WiFi.status() != WL_CONNECTED && i++ < 200) {
-    // DEBUG_MSG("Wait for %s\n",ssidName);
-    delay(100);
-  }
-  if (i >= 200) {
-    DEBUG_MSG("Could not connect to %s\n", ssidName);
-    // GO to deep sleep for 5 min before retry
-    ESP.deepSleep(5 * 60 * 1000000);
-  }
-
-  // connect MQTT
-  boolean isConnected = false;
-  i = 0;
-  do {
-    isConnected = mqtt.connect(mqttClientId, mqttUser, mqttPassword, "test/lostcom", 0, false, "yep");
-    i++;
-  } while (!isConnected && i < 5);
-
-  if (!isConnected) {
-    DEBUG_MSG("Could not connect to MQTT server\n");
-    // GO to deep sleep for 5 min before retry
-    ESP.deepSleep(5 * 60 * 1000000);
-  }
+  waitWifi();
   
-  DEBUG_MSG("Connected to MQTT server\n");
-  // wait if sensor have not finish
-  unsigned long now = millis();
-  if (now - startConv < delayconv) {
-    DEBUG_MSG("Wait convert\n");
-    delay(delayconv - (now - startConv));
-  }
+  connectMqtt();
 
+  waitEndOfConversion();
+  
   DeviceAddress address;
   while (oneWire.search(address))
   {
