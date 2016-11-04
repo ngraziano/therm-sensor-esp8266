@@ -89,7 +89,7 @@ void waitEndOfConversion() {
 
 }
 
-void waitWifi() {
+boolean waitWifi() {
   // wait wifi
   DEBUG_MSG("Connecting to %s\n", ssidName);
   uint8_t i = 0;
@@ -97,31 +97,48 @@ void waitWifi() {
     // DEBUG_MSG("Wait for %s\n",ssidName);
     delay(100);
   }
+  
   if (i >= 200) {
     DEBUG_MSG("Could not connect to %s\n", ssidName);
+    return false;
     // GO to deep sleep before retry
-    ESP.deepSleep(DEEPSLEEP * 1000000);
+    // ESP.deepSleep(DEEPSLEEP * 1000000);
   }
-
+  return false;
 }
 
-void connectMqtt() {
+boolean connectMqtt() {
   // connect MQTT
   boolean isConnected = false;
   int i = 0;
   do {
     isConnected = mqtt.connect(mqttClientId, mqttUser, mqttPassword, "test/lostcom", 0, false, "yep");
+    delay(50);
     i++;
   } while (!isConnected && i < 5);
-
-  if (!isConnected) {
+  if(isConnected)
+    DEBUG_MSG("Connected to MQTT server\n");
+  return isConnected;
+  /*if (!isConnected) {
     DEBUG_MSG("Could not connect to MQTT server\n");
     // GO to deep sleep before retry
     ESP.deepSleep(DEEPSLEEP * 1000000);
   }
-  DEBUG_MSG("Connected to MQTT server\n");
+  */
+  
 }
 
+void makeFreeRoom() {
+    DEBUG_MSG("Make free space\n");
+    std::unique_ptr<float[]> temps(new float[stateData.nbSensors * stateData.nbvals]);    
+    ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps.get(), sizeof(float) * stateData.nbSensors * stateData.nbvals);
+    void* newPtr = (void*)temps.get();
+    // forget older value
+    newPtr += sizeof(float) * stateData.nbSensors;
+    stateData.nbvals--;
+    ESP.rtcUserMemoryWrite(firstDataOffset, (uint32_t*) newPtr, sizeof(float) * stateData.nbSensors * stateData.nbvals);
+    stateData.stateFlags &= ~SEND_DATA_THIS_LOOP;
+}
 
 
 void setup() {
@@ -142,17 +159,22 @@ void setup() {
   if(rstinfo->reason == REASON_DEEP_SLEEP_AWAKE)
     firstStart = false;
   if (firstStart) {
+    DEBUG_MSG("First start.");
     stateData.stateFlags = 0;
     stateData.nbSensors = sensors.getDeviceCount();
     stateData.nbvals = 0;
   }
   else {
     ESP.rtcUserMemoryRead(0, (uint32_t*) &stateData, sizeof(stateData));
+    
   }
 
   if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
-    waitWifi();
-    connectMqtt();
+    boolean result = waitWifi();
+    result = result && connectMqtt();
+    if(!result)
+      makeFreeRoom();
+    // if connection fail SEND_DATA_THIS_LOOP is clear
   }
 
   waitEndOfConversion();
