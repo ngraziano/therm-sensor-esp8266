@@ -1,7 +1,12 @@
 
-#define MQTT_KEEPALIVE 120
 
-#define DEEPSLEEP 60
+// you need to change 
+// #define MQTT_KEEPALIVE 1200
+// #define MQTT_MAX_PACKET_SIZE 512
+
+#define MAX_KEPT_VALUE 20
+
+#define DEEPSLEEP 30
 #define ONE_WIRE_BUS 12
 #define BLUE_LED 2
 
@@ -30,7 +35,7 @@
 extern "C" {
 #include "user_interface.h"
 
-extern struct rst_info resetInfo;
+  extern struct rst_info resetInfo;
 }
 
 
@@ -53,13 +58,14 @@ struct {
 
 const byte SEND_DATA_THIS_LOOP = 1;
 
-int firstDataOffset = sizeof(stateData);
+int stateDataOffset = 0;
+int firstDataOffset = stateDataOffset + (sizeof(stateData) / 4);
 
 
 
-IPAddress mqttServer(37, 187, 2, 99);
+IPAddress mqttServer(192, 168, 0, 249 );
 
-WiFiClientSecure client;
+WiFiClient client;
 PubSubClient mqtt(mqttServer, mqttPort, client);
 
 OneWire oneWire(ONE_WIRE_BUS);
@@ -97,49 +103,57 @@ boolean waitWifi() {
     // DEBUG_MSG("Wait for %s\n",ssidName);
     delay(100);
   }
-  
+
   if (i >= 200) {
     DEBUG_MSG("Could not connect to %s\n", ssidName);
     return false;
     // GO to deep sleep before retry
     // ESP.deepSleep(DEEPSLEEP * 1000000);
   }
-  return false;
+  return true;
 }
 
 boolean connectMqtt() {
   // connect MQTT
+  DEBUG_MSG("try to MQTT server\n");
   boolean isConnected = false;
   int i = 0;
   do {
     isConnected = mqtt.connect(mqttClientId, mqttUser, mqttPassword, "test/lostcom", 0, false, "yep");
-    delay(50);
+    if (!isConnected)
+      delay(50);
     i++;
   } while (!isConnected && i < 5);
-  if(isConnected)
-    DEBUG_MSG("Connected to MQTT server\n");
+  if (isConnected)
+    DEBUG_MSG("Connected to MQTT server %i \n", i);
   return isConnected;
   /*if (!isConnected) {
     DEBUG_MSG("Could not connect to MQTT server\n");
     // GO to deep sleep before retry
     ESP.deepSleep(DEEPSLEEP * 1000000);
-  }
+    }
   */
-  
+
 }
 
 void makeFreeRoom() {
-    DEBUG_MSG("Make free space\n");
-    std::unique_ptr<float[]> temps(new float[stateData.nbSensors * stateData.nbvals]);    
-    ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps.get(), sizeof(float) * stateData.nbSensors * stateData.nbvals);
-    void* newPtr = (void*)temps.get();
-    // forget older value
-    newPtr += sizeof(float) * stateData.nbSensors;
-    stateData.nbvals--;
-    ESP.rtcUserMemoryWrite(firstDataOffset, (uint32_t*) newPtr, sizeof(float) * stateData.nbSensors * stateData.nbvals);
-    stateData.stateFlags &= ~SEND_DATA_THIS_LOOP;
+  DEBUG_MSG("Make free space\n");
+  char buffer[(stateData.nbSensors * stateData.nbvals) * sizeof(float) + 4];
+  float* temps = GetAlignedBuffer(buffer);
+  ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
+  //byte* newPtr = (byte*)temps;
+  // forget older value sizeof(float) * 
+  temps += stateData.nbSensors;
+  stateData.nbvals--;
+  ESP.rtcUserMemoryWrite(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
+  stateData.stateFlags &= ~SEND_DATA_THIS_LOOP;
 }
 
+float* GetAlignedBuffer(char * buffer) {
+  if ((int)buffer % 4 != 0 )
+    DEBUG_MSG("Not alligned\n");
+  return (float*)  (buffer +  ((4 - ((int)buffer % 4)) % 4));
+}
 
 void setup() {
 
@@ -151,28 +165,28 @@ void setup() {
   // Wifi is automatic connect next time.
   // WiFi.begin(ssidName, ssidPassword, 11);
 
-  DEBUG_MSG("\n");
+  DEBUG_MSG("\nGO\n");
   startConversion();
 
   bool firstStart = true;
   rst_info * rstinfo = ESP.getResetInfoPtr();
-  if(rstinfo->reason == REASON_DEEP_SLEEP_AWAKE)
+  if (rstinfo->reason == REASON_DEEP_SLEEP_AWAKE)
     firstStart = false;
   if (firstStart) {
-    DEBUG_MSG("First start.");
-    stateData.stateFlags = 0;
+    DEBUG_MSG("First start.\n");
+    DEBUG_MSG("MQTT BUFFER %i\n",MQTT_MAX_PACKET_SIZE);
+    stateData.stateFlags = SEND_DATA_THIS_LOOP;
     stateData.nbSensors = sensors.getDeviceCount();
     stateData.nbvals = 0;
   }
   else {
-    ESP.rtcUserMemoryRead(0, (uint32_t*) &stateData, sizeof(stateData));
-    
+    ESP.rtcUserMemoryRead(stateDataOffset, (uint32_t*) &stateData, sizeof(stateData) / 4);
   }
 
   if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
     boolean result = waitWifi();
     result = result && connectMqtt();
-    if(!result)
+    if (!result)
       makeFreeRoom();
     // if connection fail SEND_DATA_THIS_LOOP is clear
   }
@@ -181,23 +195,29 @@ void setup() {
 
   DeviceAddress address;
 
-  if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
-    DEBUG_MSG("Do not send this time.");
+  if (!(stateData.stateFlags & SEND_DATA_THIS_LOOP)) {
+    DEBUG_MSG("Do not send this time.\n");
+    DEBUG_MSG("Manage %i.\n", stateData.nbSensors);
     int i = 0;
-    std::unique_ptr<float[]> temps(new float[stateData.nbSensors]);
+    char buffer[stateData.nbSensors * sizeof(float) + 4];
+    float* temps = GetAlignedBuffer(buffer);
     while (oneWire.search(address) && i < stateData.nbSensors) {
-      DEBUG_MSG("Read Temp for memory");
       temps[i] = sensors.getTempC(address);
+      DEBUG_MSG("Read Temp for memory : %s \n", String(temps[i]).c_str());
       i++;
     }
-    int dataOffset = firstDataOffset + sizeof(float) * stateData.nbvals;
-    ESP.rtcUserMemoryWrite(dataOffset, (uint32_t*) temps.get(), sizeof(float) * stateData.nbSensors );
+    int dataOffset = firstDataOffset + sizeof(float) * stateData.nbvals * stateData.nbSensors / 4;
+    ESP.rtcUserMemoryWrite(dataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors);
     stateData.nbvals++;
-    DEBUG_MSG("Temp store in memory.");
+    DEBUG_MSG("Temp store in memory at %i for %i byte.\n", dataOffset, sizeof(float) * stateData.nbSensors);
   } else {
-    DEBUG_MSG("Read Stored temps.");
-    std::unique_ptr<float[]> temps(new float[stateData.nbSensors * stateData.nbvals]);
-    ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps.get(), sizeof(float) * stateData.nbSensors * stateData.nbvals);
+    DEBUG_MSG("Read Stored temps.\n");
+    char buffer[(stateData.nbSensors * stateData.nbvals) * sizeof(float) + 4];
+    float* temps = GetAlignedBuffer(buffer);
+    
+    DEBUG_MSG("Temp read from RTC memory at %i for %i byte.\n", firstDataOffset, sizeof(float) * stateData.nbSensors * stateData.nbvals);
+    ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
+
     int i = 0;
     while (oneWire.search(address) && i < stateData.nbSensors)
     {
@@ -220,11 +240,12 @@ void setup() {
       mqtt.publish(topic.c_str(), value.c_str(), true);
       value = "[";
       for (int numVal = 0; numVal < stateData.nbvals; numVal++) {
+        DEBUG_MSG("Add val %i", numVal * stateData.nbSensors + i);
         value += String(temps[numVal * stateData.nbSensors + i ]) + ",";
       }
       value += String(lastVal) + "]";
       topic = "test/hist/" + String(addressString);
-      mqtt.publish(topic.c_str(), value.c_str(), true);
+      mqtt.publish(topic.c_str(), value.c_str(), false);
       i++;
     }
     // Read voltage
@@ -234,26 +255,32 @@ void setup() {
 
     // reset number of values
     stateData.nbvals = 0;
+    stateData.nbSensors = sensors.getDeviceCount();
     stateData.stateFlags &= ~SEND_DATA_THIS_LOOP;
 
     // Give some time to send data.
     // and notify with a blink
     pinMode(BLUE_LED, OUTPUT);
     digitalWrite(BLUE_LED, LOW);
-    delay(250);
+    delay(100);
     digitalWrite(BLUE_LED, HIGH);
+    delay(400);
   }
   // little fash to show we are alive.
   pinMode(BLUE_LED, OUTPUT);
   digitalWrite(BLUE_LED, LOW);
-  if(stateData.nbvals > (512 - firstDataOffset) / (sizeof(float) *  stateData.nbSensors) - 1) {
-    DEBUG_MSG("Store state send next time.");
+  int maxNbVals = (512 - firstDataOffset * 4) / (sizeof(float) *  stateData.nbSensors) - 4;
+  if (maxNbVals > MAX_KEPT_VALUE)
+    maxNbVals = MAX_KEPT_VALUE;
+  DEBUG_MSG("Nbval %i/%i \n", stateData.nbvals, maxNbVals);
+  if (stateData.nbvals >=  maxNbVals ) {
+    DEBUG_MSG("Send next time.\n");
     stateData.stateFlags |= SEND_DATA_THIS_LOOP;
   }
-  DEBUG_MSG("Store state.");
-  ESP.rtcUserMemoryWrite(0, (uint32_t*) &stateData, sizeof(stateData));
+  DEBUG_MSG("Store state.\n");
+  ESP.rtcUserMemoryWrite(stateDataOffset, (uint32_t*) &stateData, sizeof(stateData));
 
-  DEBUG_MSG("Set output Hight");
+  DEBUG_MSG("Set output Hight\n");
   // set to output and hight state
   pinMode(ONE_WIRE_BUS, OUTPUT);
   digitalWrite(ONE_WIRE_BUS, HIGH);
@@ -261,11 +288,14 @@ void setup() {
   digitalWrite(BLUE_LED, HIGH);
   DEBUG_MSG("Go to deep sleep.\n");
 
-  if(stateData.stateFlags & SEND_DATA_THIS_LOOP)
-    ESP.deepSleep(DEEPSLEEP * 1000000, RF_NO_CAL);
-  else
+  if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
+    ESP.deepSleep(DEEPSLEEP * 1000000);
+    // ESP.deepSleep(DEEPSLEEP * 1000000, RF_DEFAULT);
+  } else {
     // DEEP SLEEP AND WAKE without WIFI
+    // ESP.deepSleep(DEEPSLEEP * 1000000);
     ESP.deepSleep(DEEPSLEEP * 1000000, RF_DISABLED);
+  }
 }
 
 void loop() {
