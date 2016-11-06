@@ -1,6 +1,6 @@
 
 
-// you need to change 
+// you need to change
 // #define MQTT_KEEPALIVE 1200
 // #define MQTT_MAX_PACKET_SIZE 512
 
@@ -142,7 +142,7 @@ void makeFreeRoom() {
   float* temps = GetAlignedBuffer(buffer);
   ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
   //byte* newPtr = (byte*)temps;
-  // forget older value sizeof(float) * 
+  // forget older value sizeof(float) *
   temps += stateData.nbSensors;
   stateData.nbvals--;
   ESP.rtcUserMemoryWrite(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
@@ -174,7 +174,7 @@ void setup() {
     firstStart = false;
   if (firstStart) {
     DEBUG_MSG("First start.\n");
-    DEBUG_MSG("MQTT BUFFER %i\n",MQTT_MAX_PACKET_SIZE);
+    DEBUG_MSG("MQTT BUFFER %i\n", MQTT_MAX_PACKET_SIZE);
     stateData.stateFlags = SEND_DATA_THIS_LOOP;
     stateData.nbSensors = sensors.getDeviceCount();
     stateData.nbvals = 0;
@@ -214,7 +214,7 @@ void setup() {
     DEBUG_MSG("Read Stored temps.\n");
     char buffer[(stateData.nbSensors * stateData.nbvals) * sizeof(float) + 4];
     float* temps = GetAlignedBuffer(buffer);
-    
+
     DEBUG_MSG("Temp read from RTC memory at %i for %i byte.\n", firstDataOffset, sizeof(float) * stateData.nbSensors * stateData.nbvals);
     ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
 
@@ -238,15 +238,17 @@ void setup() {
       float lastVal = sensors.getTempC(address);
       String value = String(lastVal);
       mqtt.publish(topic.c_str(), value.c_str(), true);
-      topic = "test/hist/" + String(addressString);   
+      topic = "test/hist/" + String(addressString);
+      unsigned long now = millis();
+      long runTime = now - startConv;
       for (int numVal = 0; numVal < stateData.nbvals; numVal++) {
         value = "{\"t\":-";
-        value += (stateData.nbvals - numVal)*DEEPSLEEP;
+        value += (stateData.nbvals - numVal) * DEEPSLEEP * 1000 + runTime;
         value += ",\"v\":";
         value += String(temps[numVal * stateData.nbSensors + i ]) + "}";
         mqtt.publish(topic.c_str(), value.c_str(), false);
       }
-      value = "{\"t\":0,\"v\":" + String(lastVal) + "}";
+      value = "{\"t\":-" + String(runTime) + ",\"v\":" + String(lastVal) + "}";
       mqtt.publish(topic.c_str(), value.c_str(), false);
       i++;
     }
@@ -291,13 +293,20 @@ void setup() {
   digitalWrite(BLUE_LED, HIGH);
   DEBUG_MSG("Go to deep sleep.\n");
 
+  // ajust delay to keep it at desired frequency.
+  unsigned long now = millis();
+  long runTime = now - startConv;
+  // Check that runtime do not take to long
+  if(runTime >= DEEPSLEEP * 1000) 
+    runTime = (DEEPSLEEP - 1) * 1000;
+    
   if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
-    ESP.deepSleep(DEEPSLEEP * 1000000);
+    ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000 );
     // ESP.deepSleep(DEEPSLEEP * 1000000, RF_DEFAULT);
   } else {
     // DEEP SLEEP AND WAKE without WIFI
     // ESP.deepSleep(DEEPSLEEP * 1000000);
-    ESP.deepSleep(DEEPSLEEP * 1000000, RF_DISABLED);
+    ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000, RF_DISABLED);
   }
 }
 
