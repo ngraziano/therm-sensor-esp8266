@@ -4,7 +4,7 @@
 // #define MQTT_KEEPALIVE 1200
 // #define MQTT_MAX_PACKET_SIZE 512
 
-#define MAX_KEPT_VALUE 20
+#define MAX_KEPT_VALUE 40
 
 #define DEEPSLEEP 30
 #define ONE_WIRE_BUS 12
@@ -238,19 +238,22 @@ void setup() {
       float lastVal = sensors.getTempC(address);
       String value = String(lastVal);
       mqtt.publish(topic.c_str(), value.c_str(), true);
-      value = "[";
+      topic = "test/hist/" + String(addressString);   
       for (int numVal = 0; numVal < stateData.nbvals; numVal++) {
-        DEBUG_MSG("Add val %i", numVal * stateData.nbSensors + i);
-        value += String(temps[numVal * stateData.nbSensors + i ]) + ",";
+        value = "{\"t\":-";
+        value += (stateData.nbvals - numVal)*DEEPSLEEP;
+        value += ",\"v\":";
+        value += String(temps[numVal * stateData.nbSensors + i ]) + "}";
+        mqtt.publish(topic.c_str(), value.c_str(), false);
       }
-      value += String(lastVal) + "]";
-      topic = "test/hist/" + String(addressString);
+      value = "{\"t\":0,\"v\":" + String(lastVal) + "}";
       mqtt.publish(topic.c_str(), value.c_str(), false);
       i++;
     }
     // Read voltage
     DEBUG_MSG("Read voltage :");
     String value = String(analogRead(A0) * (320.0 / 100.0 / 1024.0));
+    DEBUG_MSG("%s\n", value.c_str());
     mqtt.publish("test/volt", value.c_str(), true);
 
     // reset number of values
