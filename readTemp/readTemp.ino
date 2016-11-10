@@ -53,7 +53,7 @@ struct {
   byte stateFlags;
   byte nbSensors;
   byte nbvals;
-  byte padding[1];
+  byte nbCnxPb;
 } stateData;
 
 const byte SEND_DATA_THIS_LOOP = 1;
@@ -107,15 +107,13 @@ boolean waitWifi() {
   if (i >= 200) {
     DEBUG_MSG("Could not connect to %s\n", ssidName);
     return false;
-    // GO to deep sleep before retry
-    // ESP.deepSleep(DEEPSLEEP * 1000000);
   }
   return true;
 }
 
 boolean connectMqtt() {
   // connect MQTT
-  DEBUG_MSG("try to MQTT server\n");
+  DEBUG_MSG("try to connect to MQTT server\n");
   boolean isConnected = false;
   int i = 0;
   do {
@@ -127,16 +125,13 @@ boolean connectMqtt() {
   if (isConnected)
     DEBUG_MSG("Connected to MQTT server %i \n", i);
   return isConnected;
-  /*if (!isConnected) {
-    DEBUG_MSG("Could not connect to MQTT server\n");
-    // GO to deep sleep before retry
-    ESP.deepSleep(DEEPSLEEP * 1000000);
-    }
-  */
-
 }
 
 void makeFreeRoom() {
+  if(stateData.nbvals < MaxNumberOfValue()) {
+    DEBUG_MSG("No need to make free space\n");
+    return;
+  }
   DEBUG_MSG("Make free space\n");
   char buffer[(stateData.nbSensors * stateData.nbvals) * sizeof(float) + 4];
   float* temps = GetAlignedBuffer(buffer);
@@ -154,6 +149,13 @@ float* GetAlignedBuffer(char * buffer) {
     DEBUG_MSG("Not alligned\n");
   return (float*)  (buffer +  ((4 - ((int)buffer % 4)) % 4));
 }
+
+int MaxNumberOfValue() {
+  if(stateData.nbSensors == 0)
+    return MAX_KEPT_VALUE;
+  return (512 - firstDataOffset * 4) / (sizeof(float) *  stateData.nbSensors) - 4;  
+}
+
 
 void setup() {
 
@@ -178,6 +180,7 @@ void setup() {
     stateData.stateFlags = SEND_DATA_THIS_LOOP;
     stateData.nbSensors = sensors.getDeviceCount();
     stateData.nbvals = 0;
+    stateData.nbCnxPb = 0;
   }
   else {
     ESP.rtcUserMemoryRead(stateDataOffset, (uint32_t*) &stateData, sizeof(stateData) / 4);
@@ -186,9 +189,13 @@ void setup() {
   if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
     boolean result = waitWifi();
     result = result && connectMqtt();
-    if (!result)
+    if (!result) {
       makeFreeRoom();
+      stateData.nbCnxPb++;
     // if connection fail SEND_DATA_THIS_LOOP is clear
+    } else {
+      stateData.nbCnxPb=0;
+    }
   }
 
   waitEndOfConversion();
@@ -217,7 +224,7 @@ void setup() {
 
     DEBUG_MSG("Temp read from RTC memory at %i for %i byte.\n", firstDataOffset, sizeof(float) * stateData.nbSensors * stateData.nbvals);
     ESP.rtcUserMemoryRead(firstDataOffset, (uint32_t*) temps, sizeof(float) * stateData.nbSensors * stateData.nbvals);
-
+    int totalRetry = 0;
     int i = 0;
     while (oneWire.search(address) && i < stateData.nbSensors)
     {
@@ -246,10 +253,21 @@ void setup() {
         value += (stateData.nbvals - numVal) * DEEPSLEEP * 1000 + runTime;
         value += ",\"v\":";
         value += String(temps[numVal * stateData.nbSensors + i ]) + "}";
-        mqtt.publish(topic.c_str(), value.c_str(), false);
+        
+        if(!mqtt.publish(topic.c_str(), value.c_str(), false)) {
+          mqtt.disconnect();
+          connectMqtt();
+          totalRetry++;
+          now = millis();
+          runTime = now - startConv;
+        }
       }
       value = "{\"t\":-" + String(runTime) + ",\"v\":" + String(lastVal) + "}";
-      mqtt.publish(topic.c_str(), value.c_str(), false);
+      if(!mqtt.publish(topic.c_str(), value.c_str(), false)) {
+          mqtt.disconnect();
+          connectMqtt();
+          totalRetry++;
+      }
       i++;
     }
     // Read voltage
@@ -257,7 +275,8 @@ void setup() {
     String value = String(analogRead(A0) * (320.0 / 100.0 / 1024.0));
     DEBUG_MSG("%s\n", value.c_str());
     mqtt.publish("test/volt", value.c_str(), true);
-
+    mqtt.publish("test/totalRetry", String(totalRetry).c_str(), true);
+    mqtt.disconnect();
     // reset number of values
     stateData.nbvals = 0;
     stateData.nbSensors = sensors.getDeviceCount();
@@ -274,7 +293,7 @@ void setup() {
   // little fash to show we are alive.
   pinMode(BLUE_LED, OUTPUT);
   digitalWrite(BLUE_LED, LOW);
-  int maxNbVals = (512 - firstDataOffset * 4) / (sizeof(float) *  stateData.nbSensors) - 4;
+  int maxNbVals = MaxNumberOfValue();
   if (maxNbVals > MAX_KEPT_VALUE)
     maxNbVals = MAX_KEPT_VALUE;
   DEBUG_MSG("Nbval %i/%i \n", stateData.nbvals, maxNbVals);
@@ -301,11 +320,15 @@ void setup() {
     runTime = (DEEPSLEEP - 1) * 1000;
     
   if (stateData.stateFlags & SEND_DATA_THIS_LOOP) {
-    ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000 );
-    // ESP.deepSleep(DEEPSLEEP * 1000000, RF_DEFAULT);
+    // if to much error sleep a long time.
+    if(stateData.nbCnxPb > 20)
+      ESP.deepSleep(10 * DEEPSLEEP * 1000000);
+    else if(stateData.nbCnxPb > 0)
+      ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000 );
+    else // a test to limit consumtion
+      ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000, RF_NO_CAL);
   } else {
     // DEEP SLEEP AND WAKE without WIFI
-    // ESP.deepSleep(DEEPSLEEP * 1000000);
     ESP.deepSleep(DEEPSLEEP * 1000000 - runTime * 1000, RF_DISABLED);
   }
 }
