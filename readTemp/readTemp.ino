@@ -4,9 +4,9 @@
 // #define MQTT_KEEPALIVE 1200
 // #define MQTT_MAX_PACKET_SIZE 512
 
-#define MAX_KEPT_VALUE 40
+#define MAX_KEPT_VALUE 5
 
-#define DEEPSLEEP 30
+#define DEEPSLEEP 10
 #define ONE_WIRE_BUS 12
 #define BLUE_LED 2
 
@@ -163,10 +163,6 @@ void setup() {
   DEBUG_ESP_PORT.begin(74880);
 #endif
 
-  // Uncomment only for first prog
-  // Wifi is automatic connect next time.
-  // WiFi.begin(ssidName, ssidPassword, 11);
-
   DEBUG_MSG("\nGO\n");
   startConversion();
 
@@ -177,6 +173,11 @@ void setup() {
   if (firstStart) {
     DEBUG_MSG("First start.\n");
     DEBUG_MSG("MQTT BUFFER %i\n", MQTT_MAX_PACKET_SIZE);
+    // Uncomment only for first prog
+    // Wifi is automatic connect next time.
+    // WiFi.mode(WIFI_STA);
+    // WiFi.begin(ssidName, ssidPassword, 11);
+
     stateData.stateFlags = SEND_DATA_THIS_LOOP;
     stateData.nbSensors = sensors.getDeviceCount();
     stateData.nbvals = 0;
@@ -192,7 +193,8 @@ void setup() {
     if (!result) {
       makeFreeRoom();
       stateData.nbCnxPb++;
-    // if connection fail SEND_DATA_THIS_LOOP is clear
+      // if connection fail SEND_DATA_THIS_LOOP is clear
+      stateData.stateFlags &= ~SEND_DATA_THIS_LOOP;
     } else {
       stateData.nbCnxPb=0;
     }
