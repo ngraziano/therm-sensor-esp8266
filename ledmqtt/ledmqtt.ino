@@ -13,22 +13,21 @@
 Ticker ticker;
 
 
-#define CPI_LED 5
-
 
 #define DEBUG_MSG(...) Serial.printf( __VA_ARGS__ )
 //#define DEBUG_MSG(...)
 
 
-#define PIXEL_PIN       15
+#define CPI_LED 5
+#define PIXEL_PIN       5
 
 // How many NeoPixels are attached to the Arduino?
-#define NUMPIXELS      2
+#define NUMPIXELS      50
 
 // When we setup the NeoPixel library, we tell it how many pixels, and which pin to use to send signals.
 // Note that for older NeoPixel strips you might need to change the third parameter--see the strandtest
 // example for more information on possible values.
-Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, PIXEL_PIN, NEO_RGB + NEO_KHZ800);
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 
 
@@ -62,7 +61,7 @@ void blinkLed()
   //show led
   digitalWrite(BUILTIN_LED, LOW);
   // hide after 0.6
-  ticker.once(0.6,tick);
+  ticker.once(0.2,tick);
 }
 
 
@@ -205,19 +204,23 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   DynamicJsonBuffer jsonBuffer;
   JsonArray& json = jsonBuffer.parseArray(payloadString);
-  json.printTo(Serial);
+  //json.printTo(Serial);
 
-  int red1 = json[0]["red"];
-  int red2 = json[1]["red"];
-  int green1 = json[0]["green"];
-  int green2 = json[1]["green"];
-  int blue1 = json[0]["blue"];
-  int blue2 = json[1]["blue"];
-  DEBUG_MSG("Color1 %i,%i \n", red1,green1);
-  DEBUG_MSG("Color2 %i,%i \n", red2,green2);
+  int nbElem = json.size();
+
+  int NBLed = 50;
+
+  for(int i= NBLed-1; i >= nbElem ; i--) {
+
+      uint32_t color = pixels.getPixelColor(i - nbElem);
+      pixels.setPixelColor(i, color);
+  }
+
+  for(int i = 0; i < nbElem; i++) {
+    pixels.setPixelColor(i, pixels.Color(json[i]["red"],json[i]["green"],json[i]["blue"])); 
+  }
   
-  pixels.setPixelColor(0, pixels.Color(red1,green1,blue1)); 
-  pixels.setPixelColor(1, pixels.Color(red2,green2,blue2)); 
+
   pixels.show();
 }
 
