@@ -1,19 +1,22 @@
 #include <FS.h>                   //this needs to be first, or it all crashes and burns...
 
 #include <ESP8266WiFi.h>          //ESP8266 Core WiFi Library (you most likely already have this in your sketch)
+#include <ESP8266LLMNR.h>
+#include <ESP8266mDNS.h>
 
 #include <DNSServer.h>            //Local DNS Server used for redirecting all requests to the configuration portal
 #include <ESP8266WebServer.h>     //Local WebServer used to serve the configuration portal
 #include <WiFiManager.h>          //https://github.com/tzapu/WiFiManager WiFi Configuration Magic
+#include <ESP8266HTTPUpdateServer.h>
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 #include <PubSubClient.h>
 #include <LibTeleinfo.h>
 #include <Ticker.h>
+
 Ticker ticker;
 Ticker tickerTIC;
 
 
-TInfo          tinfo; // Teleinfo object
 
 #define BLUE_LED 2
 #define TIC_LED 5
@@ -24,7 +27,17 @@ TInfo          tinfo; // Teleinfo object
 #define DEBUG_MSG(...)
 #endif
 
+const char* host = "esp-tic";
+const char* update_path = "/firmware";
+const char* update_username = "admin";
+const char* update_password = "nico";
 
+TInfo          tinfo; // Teleinfo object
+
+// Web server
+ESP8266WebServer httpServer(80);
+// Update Server
+ESP8266HTTPUpdateServer httpUpdater;
 
 
 void buildinLedTick()
@@ -125,41 +138,43 @@ void setup() {
 
 
 
-    //WiFiManager
-    WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
-    WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 5);
-    WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 30);
-    WiFiManagerParameter custom_mqtt_password("passwor", "mqtt passwod", mqtt_password, 30);
+  //WiFiManager
+  WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
+  WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 5);
+  WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 30);
+  WiFiManagerParameter custom_mqtt_password("passwor", "mqtt passwod", mqtt_password, 30);
 
-    
-    //Local intialization. Once its business is done, there is no need to keep it around
-    WiFiManager wifiManager;
-    //set config save notify callback
-    wifiManager.setSaveConfigCallback(saveConfigCallback);
-    //add all your parameters here
-    wifiManager.addParameter(&custom_mqtt_server);
-    wifiManager.addParameter(&custom_mqtt_port);
-    wifiManager.addParameter(&custom_mqtt_user);
-    wifiManager.addParameter(&custom_mqtt_password);
-    
+  
+  //Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wifiManager;
+  //set config save notify callback
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  //add all your parameters here
+  wifiManager.addParameter(&custom_mqtt_server);
+  wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_user);
+  wifiManager.addParameter(&custom_mqtt_password);
+  
+  wifiManager.setTimeout(300);
 
-    //reset saved settings
-    //wifiManager.resetSettings();
-    
-    //set custom ip for portal
-    //wifiManager.setAPStaticIPConfig(IPAddress(10,0,1,1), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
+  //reset saved settings
+  //wifiManager.resetSettings();
+  
+  //set custom ip for portal
+  //wifiManager.setAPStaticIPConfig(IPAddress(10,0,1,1), IPAddress(10,0,1,1), IPAddress(255,255,255,0));
 
-    //fetches ssid and pass from eeprom and tries to connect
-    //if it does not connect it starts an access point with the specified name
-    //here  "AutoConnectAP"
-    //and goes into a blocking loop awaiting configuration
-    wifiManager.autoConnect("AutoConnectAP");
-    //or use this for auto generated name ESP + ChipID
-    //wifiManager.autoConnect();
-
-    
-    //if you get here you have connected to the WiFi
-    Serial.println("connected...yeey :)");
+  //fetches ssid and pass from eeprom and tries to connect
+  //if it does not connect it starts an access point with the specified name
+  //here  "AutoConnectAP"
+  //and goes into a blocking loop awaiting configuration
+  if(!wifiManager.autoConnect("AutoConnectAP")) {
+    //reset and try again.
+    ESP.restart();  
+  }
+  
+  
+  //if you get here you have connected to the WiFi
+  Serial.println("connected...yeey :)");
 
   //read updated parameters
   strcpy(mqtt_server, custom_mqtt_server.getValue());
@@ -189,18 +204,29 @@ void setup() {
 
   }
 
+  LLMNR.begin(host);
+  // MDNS
+  MDNS.begin(host);
+
+  // MQTT config
   int mqtt_port_number = atoi(mqtt_port);
-  client.setServer(mqtt_server, 1883);
+  client.setServer(mqtt_server, mqtt_port_number);
   client.setCallback(callback);
   
-
-  pinMode(TIC_LED, OUTPUT);
-   ticker.detach();
+  // Update Server
+  httpUpdater.setup(&httpServer, update_path, update_username, update_password);
+  httpServer.begin();
+  MDNS.addService("http", "tcp", 80);
+  
+  // Last blink for builtin led
+  ticker.detach();
   blinkBuiltInLed();
+  // One blink for TIC LED
+  pinMode(TIC_LED, OUTPUT);
   blinkTICLed();
+
    // Init teleinfo
   tinfo.init();
-
   // Attacher les callback dont nous avons besoin
   // pour cette demo, toutes
   //tinfo.attachADPS(ADPSCallback);
@@ -250,6 +276,8 @@ void DataCallback(ValueList * me, uint8_t  flags)
   if(!client.connected() && !connectMqtt())
       return;
   blinkBuiltInLed();
+
+  // Build topic
   String topic = "cpi/" + String(me->name);
   client.publish(topic.c_str(), me->value, true);
   
@@ -262,6 +290,16 @@ void DataCallback(ValueList * me, uint8_t  flags)
 void callback(char* topic, byte* payload, unsigned int length) {
 
   blinkBuiltInLed();
+  String payloadString;
+  for (int i = 0; i < length; i++) {
+    payloadString+=(char)payload[i];
+  }
+
+  if(payloadString == "RESET") {
+    client.publish("cpi/connect", "RESET", false);
+    ESP.restart();
+  }
+
 }
 
 boolean connectMqtt() {
@@ -271,7 +309,7 @@ boolean connectMqtt() {
   isConnected = client.connect("ESP-CPI", mqtt_user, mqtt_password, "cpi/lostcom", 0, false, "yep");
   if (isConnected) {
     DEBUG_MSG("Connected to MQTT server \n");
-    client.publish("cpi/connect", "coucou", false);
+    client.publish("cpi/connect", "CONNECT", false);
     client.subscribe("cpi/cmd");    
   }
   else
@@ -284,8 +322,8 @@ boolean connectMqtt() {
 
 void loop() {
 
-    static char c;
- 
+  static char c;
+
   // On a reçu un caractère ?
   if ( Serial.available() )
   {
@@ -296,8 +334,10 @@ void loop() {
     tinfo.process(c);
   }
 
-  client.loop(); 
-  
-  //client.publish("cpi/coucou", "coucou", false);
+  // handle MQTT
+  client.loop();
+  // handle WEB 
+  httpServer.handleClient();
+
 
 }
