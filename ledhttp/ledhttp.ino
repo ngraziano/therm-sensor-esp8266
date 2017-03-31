@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>          //https://github.com/bblanchon/ArduinoJson
 #include <ESP8266LLMNR.h>
 #include <ESP8266mDNS.h>
+#include <ESP8266HTTPUpdateServer.h>
 #include <Adafruit_NeoPixel.h>
 
 #include <Ticker.h>
@@ -19,8 +20,9 @@ Ticker ticker;
 //#define DEBUG_MSG(...)
 
 
-#define CPI_LED 5
+
 #define PIXEL_PIN       5
+#define BUTTON_PIN       4
 
 // How many NeoPixels are attached to the Arduino?
 #define NUMPIXELS      50
@@ -31,8 +33,12 @@ Ticker ticker;
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUMPIXELS, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
 ESP8266WebServer wwwserver(80);
+ESP8266HTTPUpdateServer httpUpdater;
 
 const char* host = "espled";
+const char* update_path = "/firmware";
+const char* update_username = "admin";
+const char* update_password = "nico";
 
 void tick()
 {
@@ -88,7 +94,10 @@ void setup() {
   pinMode(PIXEL_PIN, OUTPUT);
   pixels.begin();
 
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
 
+  
+  httpUpdater.setup(&wwwserver, update_path, update_username, update_password);
   wwwserver.on("/led", HTTP_PUT, handlePut);
   wwwserver.begin();
   
@@ -96,6 +105,13 @@ void setup() {
   
   Serial.println("Setup finish");
   
+}
+
+void movePixel(int nbElem) {
+  for(int i= NUMPIXELS-1; i >= nbElem ; i--) {
+      uint32_t color = pixels.getPixelColor(i - nbElem);
+      pixels.setPixelColor(i, color);
+  }
 }
 
 void handlePut() {
@@ -111,11 +127,7 @@ void handlePut() {
   int nbElem = json.size();
   DEBUG_MSG("Got %i colors\n",nbElem);
   
-  for(int i= NUMPIXELS-1; i >= nbElem ; i--) {
-
-      uint32_t color = pixels.getPixelColor(i - nbElem);
-      pixels.setPixelColor(i, color);
-  }
+  movePixel(nbElem);
 
   for(int i = 0; i < nbElem; i++) {
     pixels.setPixelColor(i, pixels.Color(json[i]["red"],json[i]["green"],json[i]["blue"])); 
@@ -130,9 +142,20 @@ void handlePut() {
 
 
 
-
+int lastButtonValue;
 
 void loop() {
 
-  wwwserver.handleClient();  
+  wwwserver.handleClient();
+  int buttonValue = digitalRead(BUTTON_PIN);
+  if(lastButtonValue != buttonValue)
+  {
+    lastButtonValue = buttonValue;
+    if(buttonValue == LOW) {
+      DEBUG_MSG("Button down\n");
+      movePixel(1);
+      pixels.setPixelColor(0, pixels.Color(255,0,0)); 
+      pixels.show();
+    }
+  }
 }
